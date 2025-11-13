@@ -1,0 +1,30 @@
+version: 2
+updates:
+  # cluster-service - Python dependencies
+  - package-ecosystem: "pip"
+    directory: "/cluster-service"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+
+  # cluster-api - Python dependencies
+  - package-ecosystem: "pip"
+    directory: "/cluster-api"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+
+  # cluster-status - Go dependencies
+  - package-ecosystem: "gomod"
+    directory: "/cluster-status"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+
+  # cluster-ui - npm dependencies
+  - package-ecosystem: "npm"
+    directory: "/cluster-ui"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+

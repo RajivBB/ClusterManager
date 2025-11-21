@@ -25,22 +25,11 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Needed for pre-commit to compare against base
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: 'pip'
-
-      - name: Cache pre-commit environments
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
-          restore-keys: |
-            pre-commit-
 
       - name: Install pre-commit
         run: |
@@ -50,7 +39,7 @@ jobs:
       - name: Load Pre-commit Config
         run: |
           if [ ! -f ".pre-commit-config.yaml" ]; then
-            echo "⚠️  No .pre-commit-config.yaml found — downloading BerryBytes global config..."
+            echo " No .pre-commit-config.yaml found — downloading BerryBytes global config..."
             curl -sSL \
               https://raw.githubusercontent.com/BerryBytes/precommit-util/main/global/precommitFile/.pre-commit-config.yaml \
               -o .pre-commit-config.yaml
@@ -61,8 +50,8 @@ jobs:
       - name: Inject temporary Stylelint config for CI
         run: |
           if [ ! -f ".stylelintrc.json" ]; then
-            echo "⚠️  Creating temporary .stylelintrc.json for CI..."
-            cat <<'EOF' > .stylelintrc.json
+            echo " Creating temporary .stylelintrc.json for CI..."
+            cat <<EOF > .stylelintrc.json
           {
             "extends": "stylelint-config-standard",
             "rules": {
@@ -77,99 +66,54 @@ jobs:
             echo "✔ .stylelintrc.json already exists — skipping"
           fi
 
-      - name: Run pre-commit checks
-        id: precommit
-        continue-on-error: true
+      # --------------------------------------------------------------------
+      # STEP 1: Run pre-commit (capture full logs and exit code safely)
+      # --------------------------------------------------------------------
+      - name: Run pre-commit (full logs)
+        id: runprecommit
         run: |
-          echo "🔍 Running pre-commit checks..."
-          pre-commit run --all-files --show-diff-on-failure --color=always 2>&1 | tee precommit_output.log
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
+          echo "🔍 Running full pre-commit checks..."
 
-      - name: Generate summary
-        if: always()
+          set +e   # allow failure
+          pre-commit run --all-files --verbose --show-diff-on-failure --color never \
+            | tee full_precommit.log
+          exit_code=${PIPESTATUS[0]}
+
+          echo "Pre-commit exit code: $exit_code"
+          echo "$exit_code" > precommit_exit_code.txt
+
+      # --------------------------------------------------------------------
+      # STEP 2: Summary of FAILED hooks
+      # --------------------------------------------------------------------
+      - name: Pre-commit summary of failed hooks
         run: |
-          EXIT_CODE="${{ steps.precommit.outputs.exit_code }}"
-          
           echo "====================================================="
-          echo "🔍 PRE-COMMIT RESULTS SUMMARY"
+          echo " PRE-COMMIT SUMMARY"
           echo "====================================================="
-          echo ""
 
-          if [ "$EXIT_CODE" = "0" ]; then
-            echo "✅ All pre-commit hooks passed!"
-            echo ""
-            echo "**Status**: Success ✅" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "All pre-commit checks completed successfully." >> $GITHUB_STEP_SUMMARY
+          exit_code=$(cat precommit_exit_code.txt)
+
+          if [ "$exit_code" = "0" ]; then
+            echo " All hooks passed!"
             exit 0
           fi
 
-          echo "❌ Pre-commit checks failed"
+          echo " Hooks failed — showing summary:"
           echo ""
 
-          # Add to GitHub summary
-          echo "**Status**: Failed ❌" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Failed Hooks" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo " FAILED HOOKS:"
+          grep -E "^\w.*\.{3,}Failed" full_precommit.log || echo "  None"
+          echo "-----------------------------------------------------"
 
-          # Extract failed hooks
-          if grep -q "Failed" precommit_output.log; then
-            echo "📋 FAILED HOOKS:"
-            grep -E "^[a-zA-Z].*\.(Failed|\.+Failed)" precommit_output.log | while read -r line; do
-              echo "  ❌ $line"
-              echo "- \`$line\`" >> $GITHUB_STEP_SUMMARY
-            done
-            echo ""
-            echo "" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo " FILES WITH ISSUES:"
+          grep -E "files were modified by this hook" -A3 full_precommit.log \
+            | sed 's/^/  - /' || echo "  None"
+          echo "-----------------------------------------------------"
 
-          # Extract modified files
-          if grep -q "files were modified" precommit_output.log; then
-            echo "📝 FILES MODIFIED BY HOOKS:"
-            echo "## Modified Files" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            
-            grep -A 20 "files were modified" precommit_output.log | \
-              grep -E "^\s*-\s" | head -20 | while read -r file; do
-              echo "  $file"
-              echo "$file" >> $GITHUB_STEP_SUMMARY
-            done
-            echo ""
-            echo "" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo " ERROR DETAILS:"
+          grep -Ei "(error|failed|violation|missing|line too long|could not|warning)" full_precommit.log \
+            | grep -Ev "^(---|\+\+\+|@@|diff --git|index )" \
+            | sed 's/^/  • /' || echo "  None"
+          echo "-----------------------------------------------------"
 
-          # Extract error messages
-          if grep -Eiq "(error|warning|violation)" precommit_output.log; then
-            echo "⚠️  ERROR DETAILS:"
-            echo "## Error Details" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            
-            grep -Ei "(error|warning|violation|line too long|missing)" precommit_output.log | \
-              grep -Ev "^(---|\+\+\+|@@|diff --git|index )" | \
-              head -50 | while read -r err; do
-              echo "  • $err"
-              echo "$err" >> $GITHUB_STEP_SUMMARY
-            done
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo ""
-          fi
-
-          echo "====================================================="
-          echo "💡 To fix locally, run: pre-commit run --all-files"
-          echo "====================================================="
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "💡 **To fix locally**: Run \`pre-commit run --all-files\`" >> $GITHUB_STEP_SUMMARY
-
-          exit "$EXIT_CODE"
-
-      - name: Upload pre-commit logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: precommit-logs
-          path: precommit_output.log
-          retention-days: 7
+          exit $exit_code
